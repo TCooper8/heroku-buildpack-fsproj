@@ -130,7 +130,7 @@ if [ "${SLN}" == "" ]; then
   error "No *.fsproj file found"
 fi
 
-topic "Compiling .NET application"
+topic "Compiling using msbuild"
 msbuild /property:Configuration=Release /property:OutDir=$BUILD_DIR/ $SLN
 
 if $MONO_FALLBACK; then
