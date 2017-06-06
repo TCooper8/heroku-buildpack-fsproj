@@ -1,138 +1,92 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # bin/compile <build-dir> <cache-dir>
+
+BUILD_DIR=$1
+CACHE_DIR=$2
+LP_DIR=`cd $(dirname $0); cd ..; pwd`
 
 # fail fast
 set -e
 
-# debug
-# set -x
+MONO3_VM_BINARY="https://github.com/SuaveIO/mono-builder/releases/download/0.0.9/mono-4.4.2.11.tar.gz"
+NUGET_BINARY="https://dist.nuget.org/win-x86-commandline/latest/nuget.exe"
+PAKET_BINARY="https://github.com/fsprojects/Paket/releases/download/3.13.3/paket.exe"
 
-# parse and derive params
-BUILD_DIR=$1
-CACHE_DIR=$2
-ENV_DIR=$3
-# This is where the buildpack is stored
-BUILDPACK_DIR=`cd $(dirname $0); cd ..; pwd`
+NUGET="${BUILD_DIR}/vendor/mono/bin/nuget.exe"
+MOZROOT="${BUILD_DIR}/vendor/mono/lib/mono/4.5/mozroots.exe"
+XBUILD="${BUILD_DIR}/vendor/mono/lib/mono/4.5/xbuild.exe"
 
-function warn() {
-  echo " !     warning: $*" >&2
-}
-
-function error() {
-  echo " !     error: $*" >&2
-  exit 1
-}
-
-function topic() {
-  echo "-----> $*"
-}
-
-function indent() {
-  sed -u 's/^/       /'
-}
-
-MONO_VERSION=`cat $BUILDPACK_DIR/latest`
-MONO_TYPE="minimal"
-
-if [[ -f $BUILD_DIR/.mono ]]; then
-  source $BUILD_DIR/.mono
+echo "-----> Downloading mono to ${CACHE_DIR}/$STACK/vendor"
+if [ ! -d ${CACHE_DIR}/$STACK/vendor/mono ]; then
+    mkdir -p ${CACHE_DIR}/$STACK/vendor
+    curl -L $MONO3_VM_BINARY -s | tar zxf - -C ${CACHE_DIR}/$STACK/vendor
+    curl $NUGET_BINARY -L -o "${CACHE_DIR}/$STACK/vendor/mono/bin/nuget.exe"
+    curl $PAKET_BINARY -L -o "${CACHE_DIR}/$STACK/vendor/mono/bin/paket.exe"
 fi
 
-if [[ $MONO_TYPE != "full" && $MONO_TYPE != "minimal" ]]; then
-  warn "MONO_TYPE must be 'minimal' or 'full': '$MONO_TYPE'"
-  warn "Setting MONO_TYPE to 'full'"
-  MONO_TYPE="full"
-fi
+# echo "-----> Copying ${CACHE_DIR}/$STACK/vendor/mono/lib/mono/Microsoft SDKs/F#/3.1/Framework/v4.5/* to ${CACHE_DIR}/$STACK/vendor/mono/lib/mono/Microsoft SDKs/F#/3.1/Framework/v4.0/"
+# echo "       This is for Mono on Debian."
+# mkdir -p "${CACHE_DIR}/$STACK/vendor/mono/lib/mono/Microsoft SDKs/F#/3.1/Framework/v4.0/"
+# cp -pr "${CACHE_DIR}/$STACK/vendor/mono/lib/mono/Microsoft SDKs/F#/3.1/Framework/v4.5/Microsoft.FSharp.Targets" "${CACHE_DIR}/$STACK/vendor/mono/lib/mono/Microsoft SDKs/F#/3.1/Framework/v4.0/"
+# cp -pr "${CACHE_DIR}/$STACK/vendor/mono/lib/mono/Microsoft SDKs/F#/3.1/Framework/v4.5/Microsoft.Portable.FSharp.Targets" "${CACHE_DIR}/$STACK/vendor/mono/lib/mono/Microsoft SDKs/F#/3.1/Framework/v4.0/"
 
-MONO_CACHE_DIR=$CACHE_DIR/mono-adamb
-mkdir -p $MONO_CACHE_DIR
+mkdir -p ${BUILD_DIR}/vendor
 
-if [ -n "$MONO_CACHE" ]; then
-  # cache clearing requested
-  rm -rf $MONO_CACHE_DIR/*
-fi
+echo "-----> Copying ${CACHE_DIR}/$STACK/vendor/mono to ${BUILD_DIR}/vendor"
+cp -pr "${CACHE_DIR}/$STACK/vendor/mono" "${BUILD_DIR}/vendor/"
 
-set +e
-MONO_FALLBACK=false
-MONO_LOCATION=$MONO_CACHE_DIR/${MONO_VERSION}-${MONO_TYPE}.tar.xz
-if [[ -f $MONO_LOCATION ]]; then
-  topic "Restoring mono version $MONO_VERSION-$MONO_TYPE from cache"
-else
-  # clear mono cache on failed download
-  rm -rf $MONO_CACHE_DIR/*
-  topic "Installing mono version $MONO_VERSION-$MONO_TYPE"
+rm -fr /app/vendor/mono
 
-  MONO_URL="https://github.com/AdamBurgess/heroku-buildpack-mono/releases/download/$MONO_VERSION/mono-$MONO_TYPE.tar.xz"
-  FALLBACK_URL="https://github.com/AdamBurgess/heroku-buildpack-mono/releases/download/mono-4.2.2.30/mono-$MONO_TYPE.tar.xz"
+# Mono expects to be running out of /app
+echo "-----> Linking ${BUILD_DIR}/v\endor/mono --> /app"
+ln -s "${BUILD_DIR}/vendor/mono" /app
 
-  topic "Downloading $MONO_URL"
-  curl $MONO_URL -Lfs >$MONO_LOCATION
-  if [ $? -ne 0 ]; then
-    warn "Failed to download $MONO_URL"
-    rm -rf $MONO_LOCATION
-    MONO_LOCATION=/tmp/mono.tar.xz
-    MONO_FALLBACK=true
-    topic "Downloading fallback mono (v4.2.2): $FALLBACK_URL"
-    curl $FALLBACK_URL -Lfs >$MONO_LOCATION
-    if [ $? -ne 0 ]; then
-      error "Failed to download $FALLBACK_URL. Is GitHub down?"
-    fi
-  fi
-fi
+cp -p /app/mono/bin/fsharpc /app/mono/bin/fsharpc-heroku
+cp -p /app/mono/bin/fsharpi /app/mono/bin/fsharpi-heroku
 
-set -e
-
-tar xJf $MONO_LOCATION -C $BUILD_DIR
-
-# mono expects to be running out of /app/mono
-ln -s $BUILD_DIR/mono /app/mono
-mkdir -p $BUILD_DIR/.config/.mono/certs
-ln -s $BUILD_DIR/.config /app/.config
-
+echo "-----> Setting envvars"
 export PATH="/app/mono/bin:$PATH"
 export LD_LIBRARY_PATH="/app/mono/lib:$LD_LIBRARY_PATH"
-export MONO_CONFIG="/app/mono/etc/mono/config"
+echo "-----> Importing trusted root certificates"
+cert-sync --quiet --user /etc/ssl/certs/ca-certificates.crt
 
-# install certificates from the host
-# using this ensures that the certs are managed by heroku
-topic "Installing SSL certificates"
-mcs $BUILDPACK_DIR/scripts/cert-sync.cs /r:Mono.Security.dll /out:$BUILDPACK_DIR/cert-sync.exe
-mono $BUILDPACK_DIR/cert-sync.exe --quiet --user /etc/ssl/certs/ca-certificates.crt
+# cp -r ~/.config ${BUILD_DIR}/.
 
-# most of these are needed for tools like mkbundle to work
-# (and will only work with the 'full' mono build)
-mkdir -p $BUILD_DIR/.profile.d
-cat <<EOF >$BUILD_DIR/.profile.d/mono-adamb.sh
-export PATH="\$PATH:/app/mono/bin"
-export LD_LIBRARY_PATH="\$LD_LIBRARY_PATH:/app/mono/lib"
-export LIBRARY_PATH="\$LIBRARY_PATH:/app/mono/lib"
-export INCLUDE_PATH="\$INCLUDE_PATH:/app/mono/include"
-export PKG_CONFIG_PATH="\$PKG_CONFIG_PATH:/app/mono/lib/pkgconfig"
-export MONO_CFG_DIR="/app/mono/etc"
-export MONO_CONFIG="/app/mono/etc/mono/config"
-export MONO_GAC_PREFIX="/app/mono"
-EOF
+cd ${BUILD_DIR}
 
-set +e
-
-set -e
-
-# now that mono is installed, build the app
-cd $BUILD_DIR
-
-# find a solution file
-SLN=$(find . -maxdepth 1 -iname "*.fsproj")
-if [ $( echo "${SLN}" | wc -l ) -gt 1 ]; then
-  error "Too many *.fsproj files"
+if [ -f paket.lock ]; then
+  echo "-----> paket.lock found, restoring packages with paket"
+  mono /app/mono/bin/paket.exe restore
+elif [ -f paket.dependencies ]; then
+  echo "-----> paket.dependencies found, installing packages with paket"
+  mono /app/mono/bin/paket.exe install
 fi
 
-if [ "${SLN}" == "" ]; then
-  error "No *.fsproj file found"
+if [ -f app.fsx ]; then
+  if [ -f packages.config -o -f */packages.config ]; then
+   echo "-----> packages.config found, installing dependencies with nuget"
+   find  -name packages.config | xargs mono $NUGET install -o packages
+  fi
+  echo "-----> Compiling app.fsx"
+  mono /app/mono/lib/mono/4.5/fsc.exe app.fsx
+elif [ -f *.sln ]; then
+  for sln in *.sln; do
+    mono $NUGET restore $sln -PackagesDirectory packages
+  done
+  echo "-----> Compiling application"
+  mono $XBUILD /p:Configuration=Release
+elif [ -f *.fsproj ]; then
+  for proj in *.fsproj; do
+    mono $NUGET restore $proj -PackagesDirectory packages
+  done
+  echo "-----> Compiling application"
+  mono $XBUILD /p:Configuration=Release
 fi
 
-topic "Compiling using msbuild"
-xbuild /property:Configuration=Release /property:OutDir=$BUILD_DIR/ $SLN
+mkdir -p ${BUILD_DIR}/.profile.d
+cp -n ${LP_DIR}/.profile.d/* ${BUILD_DIR}/.profile.d/
 
-if $MONO_FALLBACK; then
-  warn "Mono $MONO_VERSION-$MONO_TYPE failed to install. Mono v4.2.1-$MONO_TYPE was installed instead."
-fi
+PROFILE_PATH="$BUILD_DIR/.profile.d/mozroots.sh"
+echo "#!/bin/sh" >> $PROFILE_PATH
+echo "mono /app/mono/lib/mono/4.5/mozroots.exe --import --sync" >> $PROFILE_PATH
+chmod +x $PROFILE_PATH
