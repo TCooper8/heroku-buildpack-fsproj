@@ -76,9 +76,6 @@ elif [ -f *.sln ]; then
   echo "-----> Compiling application"
   mono $XBUILD /p:Configuration=Release
 elif [ -f *.fsproj ]; then
-  for proj in *.fsproj; do
-    mono $NUGET restore $proj -PackagesDirectory packages
-  done
   echo "-----> Compiling application"
   mono $XBUILD /p:Configuration=Release
 fi
